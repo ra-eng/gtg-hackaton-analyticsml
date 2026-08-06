@@ -85,10 +85,37 @@ class ModelagemSugestaoOutput(BaseModel):
 
 
 class AvaliacaoRelatorioOutput(BaseModel):
-    """Saida do LLM para a etapa de avaliacao (a parte qualitativa, a partir das metricas ja calculadas)."""
+    """Saida do LLM para a etapa de avaliacao -- um relatorio acionavel para um
+    analista de dados, ancorado na pergunta de negocio original e nao apenas
+    nas metricas cruas do modelo."""
 
-    relatorio_business: str = Field(
-        description="Relatorio final, em linguagem acessivel, para a area de negocio interpretar o resultado."
+    resposta_pergunta_negocio: str = Field(
+        description=(
+            "Resposta direta e objetiva a pergunta de negocio original, usando os "
+            "resultados do modelo (nao um resumo tecnico generico -- responda a "
+            "pergunta especificamente)."
+        )
+    )
+    interpretacao_metricas: str = Field(
+        description=(
+            "Interpretacao das metricas de validacao em termos de impacto pratico "
+            "para o negocio (ex.: quantos casos o modelo acerta/erra na pratica, "
+            "o que isso custa ou economiza), nao apenas a definicao tecnica da metrica."
+        )
+    )
+    acoes_recomendadas: List[str] = Field(
+        description=(
+            "Lista de acoes concretas e acionaveis que a area de negocio deve tomar "
+            "com base neste modelo (ex.: quais segmentos/clientes priorizar, que "
+            "processo ou campanha acionar, que limiar de score usar, quem deve agir)."
+        )
+    )
+    riscos_e_limitacoes: str = Field(
+        description=(
+            "Riscos, limitacoes e cuidados antes de colocar o modelo em producao "
+            "(ex.: qualidade/vies dos dados, necessidade de reavaliacao periodica, "
+            "cenarios onde o modelo pode falhar)."
+        )
     )
 
 
@@ -96,9 +123,10 @@ class AvaliacaoOutput(BaseModel):
     metricas_finais: Dict[str, float] = Field(
         description="Dicionario com as metricas finais de avaliacao do melhor modelo (ex.: accuracy, f1, rmse)."
     )
-    relatorio_business: str = Field(
-        description="Relatorio final, em linguagem acessivel, para a area de negocio interpretar o resultado."
-    )
+    resposta_pergunta_negocio: str
+    interpretacao_metricas: str
+    acoes_recomendadas: List[str]
+    riscos_e_limitacoes: str
 
 
 # ---------------------------------------------------------------------------
@@ -129,7 +157,10 @@ class AgenteState(TypedDict, total=False):
 
     # Saida do no "Avaliacao"
     metricas_finais: Dict[str, float]
-    relatorio_business: str
+    resposta_pergunta_negocio: str
+    interpretacao_metricas: str
+    acoes_recomendadas: List[str]
+    riscos_e_limitacoes: str
 
 
 # ---------------------------------------------------------------------------
@@ -185,13 +216,35 @@ def montar_prompt_modelagem(categorizacao_problema: str, base_de_dados_nova: pd.
     )
 
 
-def montar_prompt_avaliacao(melhor_modelo_treinado: Dict[str, Any]) -> str:
+def montar_prompt_avaliacao(
+    pergunta_negocio: str,
+    categorizacao_problema: str,
+    metadados: Dict[str, Any],
+    features_criadas: List[str],
+    features_removidas: List[str],
+    melhor_modelo_treinado: Dict[str, Any],
+) -> str:
     return (
-        "Voce e um cientista de dados senior traduzindo resultados tecnicos para a "
-        "area de negocio.\n\n"
-        f"Resultado do treinamento: {json.dumps(melhor_modelo_treinado, ensure_ascii=False, default=str)}\n\n"
-        "Escreva um relatorio final, em linguagem acessivel, interpretando essas "
-        "metricas para a area de negocio e recomendando (ou nao) o proximo passo."
+        "Voce e um cientista de dados senior escrevendo o relatorio final de um "
+        "projeto de ML para um analista de dados que vai decidir os proximos passos "
+        "com a area de negocio. O relatorio precisa ser especifico e acionavel -- "
+        "nunca generico ou hipotetico.\n\n"
+        f"Pergunta de negocio original: {pergunta_negocio}\n"
+        f"Categoria do problema: {categorizacao_problema}\n"
+        f"Contexto/metadados do dominio: {json.dumps(metadados, ensure_ascii=False, default=str)}\n"
+        f"Features criadas na engenharia de features: {features_criadas}\n"
+        f"Features removidas na engenharia de features: {features_removidas}\n"
+        f"Resultado do treinamento (modelo vencedor e metricas de validacao): "
+        f"{json.dumps(melhor_modelo_treinado, ensure_ascii=False, default=str)}\n\n"
+        "Com base nisso:\n"
+        "1. Responda DIRETAMENTE a pergunta de negocio original, usando os resultados "
+        "do modelo -- nao repita a pergunta nem de uma resposta vaga.\n"
+        "2. Interprete as metricas de validacao em termos de impacto pratico no "
+        "negocio (o que elas significam em decisoes reais, nao so a definicao tecnica).\n"
+        "3. Liste acoes concretas e acionaveis que a area de negocio deve tomar com "
+        "base neste modelo.\n"
+        "4. Aponte riscos, limitacoes e cuidados antes de colocar o modelo em producao.\n"
+        "Ancore tudo no contexto de negocio fornecido acima -- evite jargao generico."
     )
 
 
@@ -426,19 +479,32 @@ def avaliacao(state: AgenteState) -> Dict[str, Any]:
     metricas_validacao = melhor_modelo_treinado["metricas_validacao"]
 
     logger.info("Chamando LLM para relatorio de avaliacao...")
-    prompt = montar_prompt_avaliacao(melhor_modelo_treinado)
+    prompt = montar_prompt_avaliacao(
+        pergunta_negocio=state["pergunta_negocio"],
+        categorizacao_problema=state["categorizacao_problema"],
+        metadados=state["metadados"],
+        features_criadas=state["features_criadas"],
+        features_removidas=state["features_removidas"],
+        melhor_modelo_treinado=melhor_modelo_treinado,
+    )
     sugestao = get_llm().with_structured_output(AvaliacaoRelatorioOutput).invoke(prompt)
 
     resultado = AvaliacaoOutput(
         metricas_finais=metricas_validacao,
-        relatorio_business=sugestao.relatorio_business,
+        resposta_pergunta_negocio=sugestao.resposta_pergunta_negocio,
+        interpretacao_metricas=sugestao.interpretacao_metricas,
+        acoes_recomendadas=sugestao.acoes_recomendadas,
+        riscos_e_limitacoes=sugestao.riscos_e_limitacoes,
     )
 
     logger.info("metricas_finais=%s", resultado.metricas_finais)
 
     return {
         "metricas_finais": resultado.metricas_finais,
-        "relatorio_business": resultado.relatorio_business,
+        "resposta_pergunta_negocio": resultado.resposta_pergunta_negocio,
+        "interpretacao_metricas": resultado.interpretacao_metricas,
+        "acoes_recomendadas": resultado.acoes_recomendadas,
+        "riscos_e_limitacoes": resultado.riscos_e_limitacoes,
     }
 
 

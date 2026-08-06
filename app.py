@@ -14,14 +14,18 @@ As demais chaves sao passadas livremente ao LLM como contexto adicional.
 import json
 import logging
 import time
+from pathlib import Path
 
 import pandas as pd
 import streamlit as st
 import yaml
+from fpdf import FPDF
 
 from agente_modelagem import AgenteState, agente_modelagem
 
 st.set_page_config(page_title="Agente de Modelagem", page_icon="🧭", layout="wide")
+
+_FONTS_DIR = Path(__file__).parent / "assets" / "fonts"
 
 
 STAGES = [
@@ -224,12 +228,29 @@ def render_avaliacao(o):
         for col, (nome, valor) in zip(cols, metricas.items()):
             col.metric(nome, _fmt_metrica(valor))
 
-    st.markdown("**Relatorio para a area de negocio:**")
-    st.success(o["relatorio_business"])
+    st.markdown("**Resposta a pergunta de negocio:**")
+    st.success(o["resposta_pergunta_negocio"])
 
+    st.markdown("**O que as metricas significam na pratica:**")
+    st.info(o["interpretacao_metricas"])
+
+    st.markdown("**Acoes recomendadas:**")
+    for acao in o["acoes_recomendadas"]:
+        st.markdown(f"- {acao}")
+
+    st.markdown("**Riscos e limitacoes:**")
+    st.warning(o["riscos_e_limitacoes"])
+
+    texto_avaliacao = (
+        f"Resposta a pergunta de negocio:\n{o['resposta_pergunta_negocio']}\n\n"
+        f"O que as metricas significam na pratica:\n{o['interpretacao_metricas']}\n\n"
+        "Acoes recomendadas:\n"
+        + "\n".join(f"- {acao}" for acao in o["acoes_recomendadas"])
+        + f"\n\nRiscos e limitacoes:\n{o['riscos_e_limitacoes']}\n"
+    )
     st.download_button(
         "⬇️ Baixar relatorio final (.txt)",
-        data=o["relatorio_business"],
+        data=texto_avaliacao,
         file_name="4_relatorio_negocio.txt",
         mime="text/plain",
         key="dl_avaliacao",
@@ -244,7 +265,7 @@ RENDERERS = {
 }
 
 
-def montar_relatorio_consolidado(outputs: dict) -> str:
+def montar_relatorio_consolidado(outputs: dict, pergunta_negocio: str) -> str:
     ent = outputs["entendimento_contexto"]
     feat = outputs["engenharia_features"]
     mod = outputs["modelagem"]
@@ -253,6 +274,8 @@ def montar_relatorio_consolidado(outputs: dict) -> str:
 
     linhas = [
         "# Relatorio do Agente de Modelagem",
+        "",
+        f"**Pergunta de negocio:** {pergunta_negocio}",
         "",
         "## 1. Entendimento de contexto",
         f"- Categoria do problema: **{ent['categorizacao_problema']}**",
@@ -271,14 +294,100 @@ def montar_relatorio_consolidado(outputs: dict) -> str:
         "## 4. Avaliacao",
         f"- Metricas finais: {ava['metricas_finais']}",
         "",
-        "### Relatorio para o negocio",
-        ava["relatorio_business"],
+        "### Resposta a pergunta de negocio",
+        ava["resposta_pergunta_negocio"],
+        "",
+        "### O que as metricas significam na pratica",
+        ava["interpretacao_metricas"],
+        "",
+        "### Acoes recomendadas",
+        *[f"- {acao}" for acao in ava["acoes_recomendadas"]],
+        "",
+        "### Riscos e limitacoes",
+        ava["riscos_e_limitacoes"],
         "",
     ]
     return "\n".join(linhas)
 
 
-def render_resultados(outputs: dict, logs: list):
+class RelatorioPDF(FPDF):
+    def __init__(self):
+        super().__init__()
+        self.add_font("DejaVu", "", str(_FONTS_DIR / "DejaVuSans.ttf"))
+        self.add_font("DejaVu", "B", str(_FONTS_DIR / "DejaVuSans-Bold.ttf"))
+        self.set_auto_page_break(auto=True, margin=18)
+
+    def titulo(self, texto, tamanho=16):
+        self.set_font("DejaVu", "B", tamanho)
+        self.multi_cell(0, 8, texto, new_x="LMARGIN", new_y="NEXT")
+        self.ln(2)
+
+    def secao(self, texto):
+        self.ln(2)
+        self.set_font("DejaVu", "B", 12)
+        self.multi_cell(0, 7, texto, new_x="LMARGIN", new_y="NEXT")
+        self.ln(1)
+
+    def paragrafo(self, texto):
+        self.set_font("DejaVu", "", 10.5)
+        self.multi_cell(0, 6, str(texto), new_x="LMARGIN", new_y="NEXT")
+        self.ln(1)
+
+    def bullet(self, texto):
+        self.set_font("DejaVu", "", 10.5)
+        self.multi_cell(0, 6, f"-  {texto}", new_x="LMARGIN", new_y="NEXT")
+
+
+def montar_relatorio_pdf(outputs: dict, pergunta_negocio: str) -> bytes:
+    ent = outputs["entendimento_contexto"]
+    feat = outputs["engenharia_features"]
+    mod = outputs["modelagem"]
+    ava = outputs["avaliacao"]
+    melhor = mod["melhor_modelo_treinado"]
+
+    pdf = RelatorioPDF()
+    pdf.add_page()
+
+    pdf.titulo("Relatorio do Agente de Modelagem")
+    pdf.set_font("DejaVu", "", 10.5)
+    pdf.multi_cell(0, 6, f"Pergunta de negocio: {pergunta_negocio}", new_x="LMARGIN", new_y="NEXT")
+
+    pdf.secao("1. Entendimento de contexto")
+    pdf.paragrafo(f"Categoria do problema: {ent['categorizacao_problema']}")
+    pdf.paragrafo(f"Sugestao de limpeza: {ent['sugestao_limpeza']}")
+
+    pdf.secao("2. Engenharia de features")
+    pdf.paragrafo(f"Features criadas: {', '.join(feat['features_criadas']) or 'nenhuma'}")
+    pdf.paragrafo(f"Features removidas: {', '.join(feat['features_removidas']) or 'nenhuma'}")
+
+    pdf.secao("3. Modelagem")
+    pdf.paragrafo(f"Modelos sugeridos: {', '.join(mod['modelos_sugeridos'])}")
+    pdf.paragrafo(f"Metricas recomendadas: {', '.join(mod['metricas_avaliacao'])}")
+    pdf.paragrafo(f"Modelo vencedor: {melhor['nome_modelo']} ({melhor['n_linhas_treino']} linhas de treino)")
+    metricas_fmt = ", ".join(f"{k}={_fmt_metrica(v)}" for k, v in melhor["metricas_validacao"].items())
+    pdf.paragrafo(f"Metricas de validacao: {metricas_fmt}")
+
+    pdf.secao("4. Avaliacao")
+    metricas_finais_fmt = ", ".join(f"{k}={_fmt_metrica(v)}" for k, v in ava["metricas_finais"].items())
+    pdf.paragrafo(f"Metricas finais: {metricas_finais_fmt}")
+
+    pdf.secao("Resposta a pergunta de negocio")
+    pdf.paragrafo(ava["resposta_pergunta_negocio"])
+
+    pdf.secao("O que as metricas significam na pratica")
+    pdf.paragrafo(ava["interpretacao_metricas"])
+
+    pdf.secao("Acoes recomendadas")
+    for acao in ava["acoes_recomendadas"]:
+        pdf.bullet(acao)
+
+    pdf.secao("Riscos e limitacoes")
+    pdf.paragrafo(ava["riscos_e_limitacoes"])
+
+    return bytes(pdf.output())
+
+
+def render_resultados(outputs: dict, logs: list, pergunta_negocio: str):
     st.header("Resultados por etapa")
     for stage in STAGES:
         o = outputs.get(stage["key"])
@@ -301,15 +410,26 @@ def render_resultados(outputs: dict, logs: list):
         )
 
     st.divider()
-    relatorio_md = montar_relatorio_consolidado(outputs)
-    st.download_button(
-        "⬇️ Baixar relatorio completo (.md)",
-        data=relatorio_md,
-        file_name="relatorio_completo.md",
-        mime="text/markdown",
-        type="primary",
-        key="dl_relatorio_completo",
-    )
+    relatorio_md = montar_relatorio_consolidado(outputs, pergunta_negocio)
+    relatorio_pdf = montar_relatorio_pdf(outputs, pergunta_negocio)
+    col_md, col_pdf = st.columns(2)
+    with col_md:
+        st.download_button(
+            "⬇️ Baixar relatorio completo (.md)",
+            data=relatorio_md,
+            file_name="relatorio_completo.md",
+            mime="text/markdown",
+            key="dl_relatorio_completo",
+        )
+    with col_pdf:
+        st.download_button(
+            "⬇️ Baixar relatorio completo (.pdf)",
+            data=relatorio_pdf,
+            file_name="relatorio_completo.pdf",
+            mime="application/pdf",
+            type="primary",
+            key="dl_relatorio_pdf",
+        )
 
 
 st.title("🧭 Agente de Modelagem")
@@ -411,10 +531,13 @@ with st.container(border=True):
 
         st.session_state["outputs"] = outputs
         st.session_state["logs"] = log_buffer
+        st.session_state["pergunta_negocio"] = pergunta_negocio
         st.toast("Pipeline concluido!", icon="✅")
 
 if not pronto_para_rodar and "outputs" not in st.session_state:
     st.info("Faca upload do CSV e do YAML de metadados para comecar.")
 
 if "outputs" in st.session_state:
-    render_resultados(st.session_state["outputs"], st.session_state["logs"])
+    render_resultados(
+        st.session_state["outputs"], st.session_state["logs"], st.session_state["pergunta_negocio"]
+    )
