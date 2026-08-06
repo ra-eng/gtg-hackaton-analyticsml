@@ -1,0 +1,13 @@
+pergunta_negocio: "Quais clientes tem maior probabilidade de dar churn nos proximos 30 dias?"
+coluna_target: churn
+fonte: crm_interno
+granularidade: cliente
+colunas:
+  id_cliente_hash: "Identificador anonimizado do cliente (hash), sem valor preditivo"
+  idade_cadastro_dias: "Dias desde o cadastro do cliente na base"
+  valor_ultima_compra: "Valor em R$ da ultima compra realizada"
+  qtd_compras_ultimos_6_meses: "Quantidade de compras nos ultimos 6 meses"
+  categoria_cliente: "Segmento do cliente: bronze, silver ou gold"
+  ticket_medio: "Ticket medio historico de compras do cliente, em R$"
+  dias_desde_ultima_compra: "Dias desde a ultima compra registrada"
+  churn: "Variavel alvo: 1 se o cliente deu churn, 0 caso contrario"
